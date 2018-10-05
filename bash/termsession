@@ -1,0 +1,182 @@
+#!/bin/bash -
+# Terminal Session Manager/Handler using dtach, dvtm.
+
+# Notes: Command and paramters ( i.e. $TERM_CMD, $TERM_PARAM) are assumed
+# static/constants. In case of dynamic parameter termsession will fail to
+# handle session. # eg. TERM_CMD=sleep TERM_PARAM=$(rand). In this case
+# termsession won't be able identify its session due to 'rand' parameter.
+
+# TODO :
+#        --> killall clients of termsession xxx.
+#        --> kill given client provided by pid.
+#            (will check if client with given pid exists and kill it.)
+#        --> kill server xxx.
+
+# Treat unset variables as an error
+set -o nounset
+
+TERM_CMD=dvtm
+
+PREREQUISITE_CMDS="dtach"
+#check if prerequisite commands exist
+for cmd in $PREREQUISITE_CMDS
+do
+    if ! which $cmd &> /dev/null
+    then
+        echo $cmd not found.
+        exit -1
+    fi
+done
+
+# check if specified command exist
+if ! which $TERM_CMD &> /dev/null
+then
+    echo $TERM_CMD not found.
+    exit -1
+fi
+
+TERM_SESSION_HOME=$HOME/.termsession/$TERM_CMD
+if ! test -d $TERM_SESSION_HOME
+then
+    if ! mkdir -p $TERM_SESSION_HOME &> /dev/null
+    then
+        echo "Failed to create term session directory."
+        exit -1
+    fi
+fi
+
+SESSION_PREFIX=term-session-
+TERM_SESSION_PREFIX=$TERM_SESSION_HOME/$SESSION_PREFIX
+
+function usage()
+{
+        echo Usage:
+        echo -e "\t`basename $0` list --> List all session including server and client list."
+        echo -e "\t`basename $0` attach --> With no name attach to most recen session."
+        echo -e "\t`basename $0` attach xxx --> Attach to session xxx."
+        echo -e "\t`basename $0` new xxx --> Create new session xxx."
+        echo -e "\t`basename $0` killallservers --> Kill all servers."
+        echo -e "\t`basename $0` killallclients--> Kill all clients."
+}
+
+case $# in
+   0)
+       usage
+       exit -1
+        ;;
+    1)
+        if test "$1" == "list" || test "$1" == "attach" || test "$1" == "killallservers" || test "$1" == "killallclients"
+        then
+            # check if any server is running or not
+            if ! ps -C dtach -o tty=,uid=,pid=,args=|awk '$1=$1'| grep  "^? $(id -u).*$SESSION_PREFIX.*$TERM_CMD.*\.fifo$" &> /dev/null
+            then
+                echo -e "No managed term session found."
+                exit -1
+            fi
+
+            # operations list, attach (recently created), killallserver, killallclients
+            case $1 in
+                "killallservers")
+                    echo -e "Kill term servers:"
+                    ps -C dtach -o tty=,uid=,pid=,args= |awk '$1=$1'| grep  "^? $(id -u).*$SESSION_PREFIX.*$TERM_CMD.*\.fifo$" | awk '{print $3  $6}' | while read info ; do echo -n kill --\> name:$(echo $info|cut -d"-" -f3) ; echo -n " pid:"$(echo $info|cut -d'/' -f1) ;  echo ; kill -9 $(echo $info|cut -d'/' -f1) ; done
+                    # remove stale socket entries for killed session.
+                    find $TERM_SESSION_HOME -type s -exec rm -f {} \;
+                    exit 0
+                    ;;
+                "killallclients")
+                    echo -e "Kill term clients:"
+                    if ps -C dtach -o tty=,uid=,pid=,args= |awk '$1=$1'| grep "^pts.* $UID .*$SESSION_PREFIX.*$TERM_CMD.*\.fifo$" &> /dev/null
+                    then
+                        ps -C dtach -o tty=,uid=,pid=,args= |awk '$1=$1'| grep  "^pts.* $(id -u).*$SESSION_PREFIX.*$TERM_CMD.*\.fifo$" | awk '{print $3  $6}' | while read info ; do echo -n kill --\> name:$(echo $info|cut -d"-" -f3) ; echo -n " pid:"$(echo $info|cut -d'/' -f1) ; echo ; kill -9 $(echo $info|cut -d'/' -f1) ; done
+                    else
+                        echo -e "No client found to kill."
+                        exit -1
+                    fi
+                    exit 0
+                    ;;
+                "list")
+                    echo -e "Term servers:"
+                    ps -C dtach -o tty=,uid=,pid=,args= |awk '$1=$1'| grep  "^? $(id -u).*$SESSION_PREFIX.*$TERM_CMD.*\.fifo$" | awk '{print $3  $6}' | while read info ; do echo -n name:$(echo $info|cut -d"-" -f3) ; echo -n " pid:"$(echo $info|cut -d'/' -f1) ; echo ; done
+                    echo -e "\nTerm clients:"
+                    if ps -C dtach -o tty=,uid=,pid=,args= |awk '$1=$1'| grep "^pts.* $UID .*$SESSION_PREFIX.*$TERM_CMD.*\.fifo$" &> /dev/null
+                    then
+                        ps -C dtach -o tty=,uid=,pid=,args= |awk '$1=$1'| grep  "^pts.* $(id -u).*$SESSION_PREFIX.*$TERM_CMD.*\.fifo$" | awk '{print $3  $6}' | while read info ; do echo -n name:$(echo $info|cut -d"-" -f3) ; echo -n " pid:"$(echo $info|cut -d'/' -f1) ; echo ; done
+                    else
+                        echo -e "No client attached to any managed term session."
+                    fi
+                    exit 0
+                    ;;
+                "attach")
+                    session_cnt=$(ps -C dtach -o etimes=,tty=,uid= -o args=|awk '$1=$1'|grep  "^[0-9]* ? ${UID}.*$SESSION_PREFIX.*$TERM_CMD.*\.fifo$"| awk '{print $6}' | wc -l)
+                    if [[ "$session_cnt" != "1" ]]
+                    then
+                        termsesionfile=$(ps -C dtach -o etimes=,tty=,uid= -o args=|awk '$1=$1'|grep  "^[0-9]* ? ${UID}.*$SESSION_PREFIX.*$TERM_CMD.*\.fifo$"| awk '{print $6}'|head -n1)
+                    else
+                        termsesionfile=$(ps -C dtach -o etimes=,tty=,uid= -o args=|awk '$1=$1'|grep  "^[0-9]* ? ${UID}.*$SESSION_PREFIX.*$TERM_CMD.*\.fifo$"| awk '{print $6}')
+                    fi
+                    echo $termsesionfile
+                    if [ "$termsesionfile" ]
+                    then
+                        if ! test -S "$termsesionfile"
+                        then
+                            echo session file $termsesionfile not found
+                            exit -1
+                        fi
+                    else
+                        echo -e "No managed term session found1."
+                        exit -1
+                    fi
+                    ;;
+            esac
+        else
+            usage
+            echo invalid parameter provided.
+            exit -1
+        fi
+        ;;
+    2)
+        if test "$1" == "new" || test "$1" == "attach"
+        then
+            termsesionfile=$TERM_SESSION_PREFIX$2
+            case $1 in
+                "new")
+                    if test -S $termsesionfile
+                    then
+                        echo session $2 already exist.
+                        exit -1
+                    fi
+                    FIFO=${termsesionfile}.fifo
+                    [ -p "$FIFO" ] || mkfifo -m 600 "$FIFO" || exit 1
+                    #nohup bash -c "(screen-mem-usage & screen-cpu-usage) > $FIFO" &> /dev/null &
+                    #nohup bash -c "(screen-mem-usage & screen-cpu-usage & while true ; do date ; sleep 9 ; done) > $FIFO" &> /dev/null &
+                    #nohup _dvtm_status &> $FIFO &
+                    ;;
+                "attach")
+                    if ! test -S $termsesionfile
+                    then
+                        echo no session $2 found.
+                        exit -1
+                    fi
+                    ;;
+            esac
+        else
+            usage
+            echo invalid option provided.
+            exit -1
+        fi
+        ;;
+    *)
+        usage
+        exit -1
+esac
+FIFO=${termsesionfile}.fifo
+# remove -E to have detach key
+dtach -A $termsesionfile -E -z -r winch $TERM_CMD -s "$FIFO"
+#dtach -A $termsesionfile -z -r winch $TERM_CMD -s "$FIFO"
+# session/file cleanup
+session_cnt=$(ps -C dtach -o etimes=,tty=,uid= -o args=|awk '$1=$1'|grep  "^[0-9]* ? ${UID}.*$SESSION_PREFIX.*$TERM_CMD.*\.fifo$"| awk '{print $6}' | wc -l)
+if [[ "$session_cnt" == "0" ]]
+then
+    rm -f $termsesionfile $FIFO
+fi
+exit $?
